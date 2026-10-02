@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Wi-Fi GeoTracker</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <link rel="stylesheet" href="/static/style.css?v=1.0.1">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <svg viewBox="0 0 24 24" class="brand-icon" aria-hidden="true">
+        <path d="M12 21s-7-6.2-7-11.5A7 7 0 0 1 19 9.5C19 14.8 12 21 12 21z" fill="none" stroke="currentColor" stroke-width="1.8"/>
+        <path d="M8.5 9.6a5 5 0 0 1 7 0M10.2 11.4a2.6 2.6 0 0 1 3.6 0" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+        <circle cx="12" cy="13.2" r="1.1" fill="currentColor"/>
+      </svg>
+      <div>
+        <h1>Wi-Fi GeoTracker</h1>
+        <p>Wi-Fi triangulation via Google Geolocation API</p>
+      </div>
+    </div>
+    <div class="controls">
+      <label class="field">
+        <span>Device</span>
+        <select id="deviceSelect"><option value="">No devices yet</option></select>
+      </label>
+      <label class="field">
+        <span>Range</span>
+        <select id="rangeSelect">
+          <option value="3600">Last hour</option>
+          <option value="86400" selected>Last 24 h</option>
+          <option value="604800">Last 7 days</option>
+          <option value="0">All time</option>
+        </select>
+      </label>
+      <div id="statusPill" class="pill pill-offline"><span class="dot"></span><span id="statusText">Offline</span></div>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="map-wrap">
+      <div id="map"></div>
+      <div id="emptyState" class="empty-state">
+        <h2>Waiting for the first fix</h2>
+        <p>Power up the ESP board, or run <code>python tools/simulate_device.py</code> to see a demo track.</p>
+      </div>
+      <div class="map-actions">
+        <button id="followBtn" class="btn btn-toggle active" title="Keep the latest fix centred">Follow</button>
+        <button id="fitBtn" class="btn" title="Zoom to the whole track">Fit track</button>
+      </div>
+    </section>
+
+    <aside class="sidebar">
+      <div class="stats">
+        <div class="stat"><span class="label">Latitude</span><span id="statLat" class="value mono">-</span></div>
+        <div class="stat"><span class="label">Longitude</span><span id="statLng" class="value mono">-</span></div>
+        <div class="stat"><span class="label">Accuracy</span><span id="statAcc" class="value">-</span></div>
+        <div class="stat"><span class="label">Access points</span><span id="statAps" class="value">-</span></div>
+        <div class="stat"><span class="label">Last update</span><span id="statAge" class="value">-</span></div>
+        <div class="stat"><span class="label">Distance (range)</span><span id="statDist" class="value">-</span></div>
+      </div>
+
+      <div class="actions">
+        <a id="gmapsLink" class="btn btn-primary disabled" target="_blank" rel="noopener">Open in Google Maps</a>
+        <button id="copyBtn" class="btn" disabled>Copy coordinates</button>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <h3>Access points used</h3>
+          <span id="motionBadge" class="badge">-</span>
+        </div>
+        <ul id="apList" class="ap-list"><li class="muted">No scan data yet</li></ul>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head"><h3>Recent fixes</h3><span id="fixCount" class="muted small"></span></div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Time</th><th>Lat, Lng</th><th>&plusmn; m</th><th>APs</th></tr></thead>
+            <tbody id="fixTable"></tbody>
+          </table>
+        </div>
+      </div>
+    </aside>
+  </main>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="/static/app.js?v=1.0.1"></script>
+</body>
+</html>
