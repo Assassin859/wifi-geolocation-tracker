@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
-  <link rel="stylesheet" href="/static/style.css?v=1.0.1">
+  <link rel="stylesheet" href="/static/style.css?v=1.1.1">
 </head>
 <body>
   <header class="topbar">
@@ -19,13 +19,20 @@
       </svg>
       <div>
         <h1>Wi-Fi GeoTracker</h1>
-        <p>Wi-Fi triangulation via Google Geolocation API</p>
+        <p>Wi-Fi triangulation geolocation</p>
       </div>
     </div>
     <div class="controls">
       <label class="field">
         <span>Device</span>
         <select id="deviceSelect"><option value="">No devices yet</option></select>
+      </label>
+      <label class="field" id="mapField" hidden>
+        <span>Map</span>
+        <select id="mapSelect">
+          <option value="google">Google Maps</option>
+          <option value="leaflet">OpenStreetMap</option>
+        </select>
       </label>
       <label class="field">
         <span>Range</span>
@@ -47,6 +54,7 @@
         <h2>Waiting for the first fix</h2>
         <p>Power up the ESP board, or run <code>python tools/simulate_device.py</code> to see a demo track.</p>
       </div>
+      <div id="toast" class="toast" role="status"></div>
       <div class="map-actions">
         <button id="followBtn" class="btn btn-toggle active" title="Keep the latest fix centred">Follow</button>
         <button id="fitBtn" class="btn" title="Zoom to the whole track">Fit track</button>
@@ -89,6 +97,7 @@
   </main>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="/static/app.js?v=1.0.1"></script>
+  <script src="/static/maps.js?v=1.1.1"></script>
+  <script src="/static/app.js?v=1.1.1"></script>
 </body>
 </html>

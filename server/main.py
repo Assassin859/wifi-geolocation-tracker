@@ -23,6 +23,10 @@ ROOT = Path(__file__).resolve().parent
 load_dotenv(ROOT / ".env")
 
 DEVICE_API_KEY = os.getenv("DEVICE_API_KEY", "change-me")
+# Browser key for the Maps JavaScript API. It is sent to every visitor, so restrict
+# it by HTTP referrer. Never put the Geolocation key (GOOGLE_API_KEY) here.
+GOOGLE_MAPS_JS_KEY = os.getenv("GOOGLE_MAPS_JS_KEY", "").strip()
+GOOGLE_MAPS_MAP_ID = os.getenv("GOOGLE_MAPS_MAP_ID", "").strip()
 DB_PATH = Path(os.getenv("TRACKER_DB", ROOT / "data" / "tracker.db"))
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
@@ -163,6 +167,11 @@ def latest(device_id: str):
     if row is None:
         raise HTTPException(status_code=404, detail="No fixes for this device")
     return row_to_fix(row, include_aps=True)
+
+
+@app.get("/api/config")
+def client_config():
+    return {"google_maps_key": GOOGLE_MAPS_JS_KEY, "google_maps_map_id": GOOGLE_MAPS_MAP_ID}
 
 
 app.mount("/static", StaticFiles(directory=ROOT / "static"), name="static")

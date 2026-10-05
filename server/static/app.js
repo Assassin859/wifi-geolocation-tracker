@@ -16,36 +16,7 @@ const state = {
   mapSignature: null,
 };
 
-// ------------------------------------------------------------------ map
-
-const map = L.map("map", { zoomControl: true }).setView([20, 0], 2);
-
-const streets = L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
-  maxZoom: 19,
-  attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
-}).addTo(map);
-const dark = L.tileLayer(
-  "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}",
-  { maxZoom: 19, maxNativeZoom: 16, attribution: "Tiles &copy; Esri" }
-);
-const satellite = L.tileLayer(
-  "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-  { maxZoom: 19, attribution: "Tiles &copy; Esri" }
-);
-L.control.layers({ Streets: streets, Dark: dark, Satellite: satellite }, null, { position: "topright" }).addTo(map);
-L.control.scale({ imperial: false }).addTo(map);
-
-const trackLine = L.polyline([], { color: "#4f8cff", weight: 3, opacity: 0.85 }).addTo(map);
-const pointsLayer = L.layerGroup().addTo(map);
-const accuracyCircle = L.circle([0, 0], {
-  radius: 0, color: "#22d3ee", weight: 1.5, fillColor: "#22d3ee", fillOpacity: 0.12,
-});
-const latestMarker = L.marker([0, 0], {
-  icon: L.divIcon({ className: "", html: '<div class="pulse-marker"></div>', iconSize: [18, 18], iconAnchor: [9, 9] }),
-  zIndexOffset: 1000,
-});
-
-map.on("dragstart", () => setFollow(false));
+let mapView = null;
 
 // -------------------------------------------------------------- helpers
 
@@ -222,49 +193,121 @@ function renderTable() {
     .join("");
 }
 
+function fixPopup(f) {
+  return `<div class="map-popup"><b>${formatTime(f.ts)}</b><br>${f.lat.toFixed(6)}, ${f.lng.toFixed(6)}<br>&plusmn; ${Math.round(f.accuracy)} m &middot; ${f.ap_count} APs</div>`;
+}
+
+function latestPopup(f) {
+  return `<div class="map-popup"><b>${escapeHtml(f.device_id)}</b><br>${f.lat.toFixed(6)}, ${f.lng.toFixed(6)}<br>&plusmn; ${Math.round(f.accuracy)} m<br>${formatTime(f.ts)}</div>`;
+}
+
 function renderMap() {
+  if (!mapView) return;
   const fixes = state.fixes;
-  const signature = `${state.deviceId}|${state.range}|${fixes.length}|${state.latest?.id}`;
+  const signature = `${mapView.name}|${state.deviceId}|${state.range}|${fixes.length}|${state.latest?.id}`;
   if (signature === state.mapSignature) return;
   state.mapSignature = signature;
 
-  trackLine.setLatLngs(fixes.map((f) => [f.lat, f.lng]));
-
-  pointsLayer.clearLayers();
-  fixes.slice(0, -1).forEach((f) => {
-    L.circleMarker([f.lat, f.lng], {
-      radius: 4, weight: 1, color: "#0b1020", fillColor: accuracyColor(f.accuracy), fillOpacity: 0.9,
-    })
-      .bindPopup(`<b>${formatTime(f.ts)}</b><br>${f.lat.toFixed(6)}, ${f.lng.toFixed(6)}<br>&plusmn; ${Math.round(f.accuracy)} m &middot; ${f.ap_count} APs`)
-      .addTo(pointsLayer);
-  });
-
+  mapView.setTrack(fixes);
   const f = state.latest;
-  if (!f) {
-    accuracyCircle.remove();
-    latestMarker.remove();
-    return;
-  }
-  accuracyCircle.setLatLng([f.lat, f.lng]).setRadius(f.accuracy).addTo(map);
-  latestMarker
-    .setLatLng([f.lat, f.lng])
-    .bindPopup(`<b>${escapeHtml(f.device_id)}</b><br>${f.lat.toFixed(6)}, ${f.lng.toFixed(6)}<br>&plusmn; ${Math.round(f.accuracy)} m`)
-    .addTo(map);
+  mapView.setLatest(f);
+  if (!f) return;
 
   if (state.fittedFor !== state.deviceId) {
     state.fittedFor = state.deviceId;
     fitTrack();
   } else if (state.follow && f.id !== state.lastFixId) {
-    map.panTo([f.lat, f.lng]);
+    mapView.panTo(f.lat, f.lng);
   }
   state.lastFixId = f.id;
 }
 
 function fitTrack() {
-  if (state.fixes.length > 1) {
-    map.fitBounds(trackLine.getBounds().pad(0.2), { maxZoom: 17 });
-  } else if (state.latest) {
-    map.fitBounds(accuracyCircle.getBounds().pad(0.5), { maxZoom: 17 });
+  mapView?.fitTrack(state.fixes, state.latest);
+}
+
+// ------------------------------------------------------------ map setup
+
+const mapHooks = { onUserMove: () => setFollow(false), fixPopup, latestPopup };
+
+function showToast(message) {
+  const toast = $("toast");
+  toast.textContent = message;
+  toast.classList.add("show");
+  setTimeout(() => toast.classList.remove("show"), 8000);
+}
+
+// Google Maps rewrites its container, so each backend gets a fresh element.
+function freshMapElement() {
+  const old = $("map");
+  const el = old.cloneNode(false);
+  old.replaceWith(el);
+  return el;
+}
+
+function useLeaflet(reason) {
+  if (mapView?.name === "leaflet") return;
+  try {
+    mapView?.destroy();
+  } catch (err) {
+    // A Google map that failed authentication throws on teardown; its element is replaced anyway.
+    console.warn(err);
+  }
+  mapView = createLeafletMap(freshMapElement(), mapHooks);
+  state.mapSignature = null;
+  state.fittedFor = null;
+  if (reason) showToast(`${reason} Showing OpenStreetMap instead.`);
+  renderMap();
+}
+
+async function initMap() {
+  let config = {};
+  try {
+    config = await getJson("/api/config");
+  } catch (err) {
+    console.error(err);
+  }
+
+  const hasGoogle = Boolean(config.google_maps_key);
+  const select = $("mapSelect");
+  $("mapField").hidden = !hasGoogle;
+  const preferred = localStorage.getItem("mapProvider") || "google";
+  select.value = preferred;
+  select.addEventListener("change", () => {
+    localStorage.setItem("mapProvider", select.value);
+    location.reload();
+  });
+
+  if (!hasGoogle || preferred !== "google") {
+    useLeaflet();
+    return;
+  }
+
+  try {
+    const googleView = await createGoogleMap(
+      freshMapElement(),
+      {
+        key: config.google_maps_key,
+        mapId: config.google_maps_map_id,
+        onAuthFailure: () =>
+          useLeaflet("Google Maps rejected the API key (check the key, its referrer restrictions and billing)."),
+      },
+      mapHooks
+    );
+    if (mapView?.name === "leaflet") {
+      try {
+        googleView.destroy();
+      } catch (err) {
+        console.warn(err);
+      }
+      return;
+    }
+    mapView = googleView;
+    state.mapSignature = null;
+    renderMap();
+  } catch (err) {
+    console.error(err);
+    useLeaflet("Google Maps could not be loaded.");
   }
 }
 
@@ -315,7 +358,7 @@ $("rangeSelect").addEventListener("change", (e) => {
 
 $("followBtn").addEventListener("click", () => {
   setFollow(!state.follow);
-  if (state.follow && state.latest) map.panTo([state.latest.lat, state.latest.lng]);
+  if (state.follow && state.latest) mapView?.panTo(state.latest.lat, state.latest.lng);
 });
 $("fitBtn").addEventListener("click", () => {
   setFollow(false);
@@ -333,9 +376,10 @@ $("fixTable").addEventListener("click", (e) => {
   const row = e.target.closest("tr[data-lat]");
   if (!row) return;
   setFollow(false);
-  map.setView([Number(row.dataset.lat), Number(row.dataset.lng)], Math.max(map.getZoom(), 17));
+  mapView?.focus(Number(row.dataset.lat), Number(row.dataset.lng));
 });
 
+initMap();
 refresh();
 setInterval(refresh, POLL_MS);
 setInterval(renderStatus, 1000);

@@ -1,16 +1,22 @@
-"""Locate this computer with the same Wi-Fi + Google Geolocation API flow the ESP board uses.
+"""Locate this computer and optionally publish the fix to the dashboard.
 
-Useful for checking your API key and the dashboard before flashing any hardware.
+Providers:
+    windows   Windows Location Service (free, no key; Windows only)
+    beacondb  beaconDB Wi-Fi database (free, no key; same request the ESP board sends)
+    google    Google Geolocation API (needs GOOGLE_API_KEY)
+    auto      google if GOOGLE_API_KEY is set, otherwise windows on Windows, otherwise beacondb
 
-    python tools/pc_geolocate.py              # scan, query Google, print the fix
-    python tools/pc_geolocate.py --post       # ...and publish it to the dashboard
+    python tools/pc_geolocate.py                        # auto provider, print the fix
+    python tools/pc_geolocate.py --provider windows --post
+    python tools/pc_geolocate.py --provider beacondb
 
-Supported scanners: Windows (netsh) and Linux (nmcli).
+Supported Wi-Fi scanners: Windows (netsh) and Linux (nmcli).
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import platform
 import re
@@ -24,9 +30,26 @@ from dotenv import load_dotenv
 ROOT = Path(__file__).resolve().parents[1]
 load_dotenv(ROOT / "server" / ".env")
 
-GEOLOCATION_URL = "https://www.googleapis.com/geolocation/v1/geolocate"
+GOOGLE_URL = "https://www.googleapis.com/geolocation/v1/geolocate"
+BEACONDB_URL = "https://api.beacondb.net/v1/geolocate"
+# beaconDB asks every client to identify itself.
+USER_AGENT = "wifi-geolocation-tracker/1.0 (+https://github.com/Assassin859/wifi-geolocation-tracker)"
 MAX_APS = 15
 MIN_APS = 2
+
+WINDOWS_LOCATION_PS = r"""
+Add-Type -AssemblyName System.Device
+$w = New-Object System.Device.Location.GeoCoordinateWatcher([System.Device.Location.GeoPositionAccuracy]::High)
+$null = $w.TryStart($false, [TimeSpan]::FromSeconds(15))
+$i = 0
+while (($w.Status -ne 'Ready' -or $w.Position.Location.IsUnknown) -and $w.Permission -ne 'Denied' -and $i -lt 40) {
+    Start-Sleep -Milliseconds 500; $i++
+}
+$l = $w.Position.Location
+@{ permission = "$($w.Permission)"; status = "$($w.Status)"; unknown = $l.IsUnknown;
+   lat = $l.Latitude; lng = $l.Longitude; accuracy = $l.HorizontalAccuracy } | ConvertTo-Json -Compress
+$w.Stop()
+"""
 
 
 def quality_to_dbm(percent: int) -> int:
@@ -77,6 +100,15 @@ def scan_linux() -> list[dict]:
     return aps
 
 
+def scan() -> list[dict]:
+    system = platform.system()
+    if system == "Windows":
+        return scan_windows()
+    if system == "Linux":
+        return scan_linux()
+    sys.exit(f"No Wi-Fi scanner implemented for {system}.")
+
+
 def is_locally_administered(bssid: str) -> bool:
     return bool(int(bssid[:2], 16) & 0x02)
 
@@ -91,7 +123,8 @@ def select_aps(aps: list[dict]) -> list[dict]:
     return aps[:MAX_APS]
 
 
-def geolocate(aps: list[dict], api_key: str) -> dict:
+def query_wifi_service(name: str, url: str, aps: list[dict], params: dict | None = None) -> tuple[float, float, float]:
+    """Google and beaconDB share the same request/response format."""
     body = {
         "considerIp": False,
         "wifiAccessPoints": [
@@ -103,17 +136,42 @@ def geolocate(aps: list[dict], api_key: str) -> dict:
             for ap in aps
         ],
     }
-    res = requests.post(GEOLOCATION_URL, params={"key": api_key}, json=body, timeout=15)
+    res = requests.post(url, params=params, json=body, headers={"User-Agent": USER_AGENT}, timeout=15)
     data = res.json()
     if res.status_code != 200:
         err = data.get("error", {})
         reason = (err.get("errors") or [{}])[0].get("reason", "")
-        sys.exit(f"Google API error {res.status_code}: {err.get('message')} ({reason})")
-    return data
+        hint = ""
+        if name == "beaconDB" and reason == "notFound":
+            hint = ("\nbeaconDB doesn't know these networks yet. Add them with the free NeoStumbler app "
+                    "(Android), or try --provider windows.")
+        sys.exit(f"{name} error {res.status_code}: {err.get('message')} ({reason}){hint}")
+    if data.get("fallback"):
+        sys.exit(f"{name} only returned a coarse '{data['fallback']}' fallback estimate, not a Wi-Fi fix.")
+    return data["location"]["lat"], data["location"]["lng"], data["accuracy"]
+
+
+def locate_windows() -> tuple[float, float, float]:
+    out = subprocess.run(
+        ["powershell", "-NoProfile", "-NonInteractive", "-Command", WINDOWS_LOCATION_PS],
+        capture_output=True, text=True, timeout=60,
+    ).stdout.strip()
+    try:
+        data = json.loads(out.splitlines()[-1])
+    except (IndexError, json.JSONDecodeError):
+        sys.exit(f"Could not read the Windows location: {out or 'no output'}")
+    if data["permission"] == "Denied":
+        sys.exit("Windows denied location access: Settings > Privacy & security > Location > "
+                 "turn on Location services and 'Let desktop apps access your location'.")
+    if data["unknown"]:
+        sys.exit(f"Windows has no location fix yet (status: {data['status']}). Try again in a minute.")
+    return data["lat"], data["lng"], data["accuracy"]
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--provider", choices=["auto", "windows", "beacondb", "google"],
+                        default=os.getenv("GEO_PROVIDER", "auto"))
     parser.add_argument("--api-key", default=os.getenv("GOOGLE_API_KEY"), help="Google API key (or GOOGLE_API_KEY in server/.env)")
     parser.add_argument("--post", action="store_true", help="publish the fix to the dashboard")
     parser.add_argument("--server", default=os.getenv("DASHBOARD_BASE_URL", "http://127.0.0.1:8000"))
@@ -121,28 +179,38 @@ def main() -> None:
     parser.add_argument("--device-key", default=os.getenv("DEVICE_API_KEY", "change-me"))
     args = parser.parse_args()
 
-    if not args.api_key:
+    provider = args.provider
+    if provider == "auto":
+        if args.api_key:
+            provider = "google"
+        elif platform.system() == "Windows":
+            provider = "windows"
+        else:
+            provider = "beacondb"
+    if provider == "google" and not args.api_key:
         sys.exit("Set GOOGLE_API_KEY in server/.env or pass --api-key.")
 
-    system = platform.system()
-    if system == "Windows":
-        raw = scan_windows()
-    elif system == "Linux":
-        raw = scan_linux()
-    else:
-        sys.exit(f"No Wi-Fi scanner implemented for {system}.")
-
+    # The scan is listed on the dashboard for every provider, and is the input for Wi-Fi providers.
+    raw = scan()
     aps = select_aps(raw)
     print(f"{len(raw)} access points visible, {len(aps)} used:")
     for ap in aps:
         print(f"  {ap['bssid']}  ch{ap['channel'] or '?':<3} {ap['rssi']:>4} dBm  {ap['ssid'] or '<hidden>'}")
-    if len(aps) < MIN_APS:
-        print(f"\nWarning: Google usually needs at least {MIN_APS} access points; the request may fail.")
 
-    data = geolocate(aps, args.api_key)
-    lat, lng = data["location"]["lat"], data["location"]["lng"]
-    acc = data["accuracy"]
-    print(f"\nFix: {lat:.6f}, {lng:.6f}  (+/- {acc:.0f} m)")
+    if provider == "windows":
+        print("\nAsking Windows Location Service...")
+        lat, lng, acc = locate_windows()
+    else:
+        if len(aps) < MIN_APS:
+            print(f"\nWarning: Wi-Fi geolocation usually needs at least {MIN_APS} access points; the request may fail.")
+        if provider == "google":
+            print("\nQuerying Google Geolocation API...")
+            lat, lng, acc = query_wifi_service("Google", GOOGLE_URL, aps, params={"key": args.api_key})
+        else:
+            print("\nQuerying beaconDB...")
+            lat, lng, acc = query_wifi_service("beaconDB", BEACONDB_URL, aps)
+
+    print(f"\nFix ({provider}): {lat:.6f}, {lng:.6f}  (+/- {acc:.0f} m)")
     print(f"https://www.google.com/maps/search/?api=1&query={lat},{lng}")
 
     if args.post:

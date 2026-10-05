@@ -1,20 +1,27 @@
 /*
   Wi-Fi Triangulation Geolocation Tracker
   ---------------------------------------
-  Scans nearby Wi-Fi access points (BSSID + RSSI + channel), sends them to the
-  Google Maps Geolocation API and receives latitude / longitude / accuracy -
-  no GPS module required. Fixes are published to Blynk IoT and/or the bundled
-  web dashboard (server/).
+  Scans nearby Wi-Fi access points (BSSID + RSSI + channel), sends them to a
+  Wi-Fi geolocation service (Google Geolocation API, or the free beaconDB) and
+  receives latitude / longitude / accuracy - no GPS module required. Fixes are
+  published to Blynk IoT and/or the bundled web dashboard (server/).
 
   Boards:    ESP32 (Arduino core 2.x / 3.x) or ESP8266 (Arduino core 3.x)
   Libraries: ArduinoJson 7.x (Benoit Blanchon)
              Blynk 1.3+ (Volodymyr Shymanskyy) - only if ENABLE_BLYNK = 1
 */
 
+#define GEO_PROVIDER_GOOGLE   1
+#define GEO_PROVIDER_BEACONDB 2
+
 #if __has_include("config.h")
   #include "config.h"
 #else
   #error "Missing config.h - copy config.example.h to config.h and fill in your keys."
+#endif
+
+#ifndef GEO_PROVIDER
+  #define GEO_PROVIDER GEO_PROVIDER_BEACONDB
 #endif
 
 #if defined(ESP32)
@@ -52,8 +59,21 @@
   #define VPIN_LOCATE    V5   // Integer   - push button: force a new fix
 #endif
 
-static const char *GEOLOCATION_URL =
-    "https://www.googleapis.com/geolocation/v1/geolocate?key=" GOOGLE_API_KEY;
+#if GEO_PROVIDER == GEO_PROVIDER_GOOGLE
+  #ifndef GOOGLE_API_KEY
+    #error "GEO_PROVIDER_GOOGLE needs GOOGLE_API_KEY in config.h"
+  #endif
+  static const char *GEO_NAME = "Google";
+  static const char *GEOLOCATION_URL =
+      "https://www.googleapis.com/geolocation/v1/geolocate?key=" GOOGLE_API_KEY;
+#elif GEO_PROVIDER == GEO_PROVIDER_BEACONDB
+  static const char *GEO_NAME = "beaconDB";
+  static const char *GEOLOCATION_URL = "https://api.beacondb.net/v1/geolocate";
+#else
+  #error "GEO_PROVIDER must be GEO_PROVIDER_GOOGLE or GEO_PROVIDER_BEACONDB"
+#endif
+// beaconDB asks every client to identify itself.
+static const char *USER_AGENT = "wifi-geolocation-tracker/1.0 (ESP; +https://github.com/Assassin859/wifi-geolocation-tracker)";
 
 struct AccessPoint {
   uint8_t bssid[6];
@@ -75,7 +95,7 @@ struct Fix {
 static AccessPoint aps[MAX_APS];
 static uint8_t     apCount = 0;
 
-// BSSID set used for the last successful Google query, for motion detection.
+// BSSID set used for the last successful geolocation query, for motion detection.
 static uint8_t lastQueryBssids[MAX_APS][6];
 static uint8_t lastQueryCount = 0;
 
@@ -188,10 +208,11 @@ static void rememberQuerySet() {
   for (uint8_t i = 0; i < apCount; i++) memcpy(lastQueryBssids[i], aps[i].bssid, 6);
 }
 
-// ----------------------------------------------------- Google Geolocation API
+// ------------------------------------------------ Wi-Fi geolocation service
 
+// Google and beaconDB share the same request/response format.
 // Returns true and fills `out` on success; otherwise fills `error`.
-static bool queryGoogle(Fix &out, String &error) {
+static bool queryGeolocation(Fix &out, String &error) {
   JsonDocument req;
   req["considerIp"] = false;
   JsonArray list = req["wifiAccessPoints"].to<JsonArray>();
@@ -206,7 +227,7 @@ static bool queryGoogle(Fix &out, String &error) {
 
   SecureClient client;
   // Certificate validation is skipped to avoid shipping/rotating root CAs.
-  // Restrict the API key to the Geolocation API to limit exposure.
+  // Restrict the Google API key to the Geolocation API to limit exposure.
   client.setInsecure();
 
   HTTPClient http;
@@ -215,9 +236,10 @@ static bool queryGoogle(Fix &out, String &error) {
     error = "HTTPS begin failed";
     return false;
   }
+  http.setUserAgent(USER_AGENT);
   http.addHeader("Content-Type", "application/json");
 
-  Serial.printf("[geo] querying Google with %u APs\n", apCount);
+  Serial.printf("[geo] querying %s with %u APs\n", GEO_NAME, apCount);
   int code = http.POST(body);
   String payload = code > 0 ? http.getString() : String();
   http.end();
@@ -237,8 +259,15 @@ static bool queryGoogle(Fix &out, String &error) {
   if (code != 200) {
     const char *msg = res["error"]["message"] | "unknown error";
     const char *reason = res["error"]["errors"][0]["reason"] | "";
-    error = String("Google ") + code + ": " + msg;
+    error = String(GEO_NAME) + " " + code + ": " + msg;
     if (reason[0]) error += String(" (") + reason + ")";
+    return false;
+  }
+
+  // beaconDB may answer with a city-level IP or cell-tower estimate instead of a Wi-Fi fix.
+  const char *fallback = res["fallback"] | "";
+  if (fallback[0]) {
+    error = String(GEO_NAME) + " gave only a coarse '" + fallback + "' estimate";
     return false;
   }
 
@@ -372,7 +401,7 @@ static void trackerCycle() {
 
   Fix fix;
   String error;
-  if (!queryGoogle(fix, error)) {
+  if (!queryGeolocation(fix, error)) {
     Serial.printf("[geo] %s\n", error.c_str());
     publishStatus(error.substring(0, 60));
     return;

@@ -7,9 +7,12 @@
 #define WIFI_SSID      "YourWiFiName"
 #define WIFI_PASSWORD  "YourWiFiPassword"
 
-// ------------------------------------------------- Google Maps Geolocation API
-// Create a key at https://console.cloud.google.com/ -> APIs & Services -> Credentials.
-// Restrict it to the "Geolocation API" only.
+// ------------------------------------------------- Wi-Fi geolocation service
+// GEO_PROVIDER_BEACONDB: free, no key, but only works where beaconDB knows the
+//                        networks (add yours with the NeoStumbler Android app).
+// GEO_PROVIDER_GOOGLE:   best coverage; needs a Google Cloud billing account and
+//                        GOOGLE_API_KEY below, restricted to the "Geolocation API".
+#define GEO_PROVIDER   GEO_PROVIDER_BEACONDB
 #define GOOGLE_API_KEY "AIza...your-key..."
 
 // ------------------------------------------------------------ Device identity
@@ -38,5 +41,5 @@
 #define MIN_APS               2           // Google needs at least 2 APs for a fix
 #define MIN_RSSI_DBM          -92         // ignore APs weaker than this
 // Jaccard similarity of the visible BSSID set vs. the last query. At or above this
-// value the device is treated as stationary and the paid API call is skipped.
+// value the device is treated as stationary and the geolocation call is skipped.
 #define STATIONARY_SIMILARITY 0.5f
